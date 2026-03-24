@@ -7,7 +7,7 @@
 #define PAGE_SIZE 4096  // 4KB
 #define MAX_PAGES (128 * 1024 / 4)  // Maximum pages in test
 
-// Free list structure
+// Free list structure - use simple linked list
 typedef struct free_block {
     struct free_block *next;
 } free_block_t;
@@ -17,24 +17,24 @@ static void *base_addr = NULL;
 static int total_pages = 0;
 static free_block_t *free_list[MAX_RANK + 1];  // Index 1-16
 
-// Track allocated blocks using a simple array for O(1) lookup
+// Track allocated blocks using arrays for O(1) lookup
 static char *alloc_map = NULL;  // 1 if allocated, 0 if free
 static int *alloc_rank = NULL;  // Rank of allocated block
 
 // Helper function to check if address is valid
-static int is_valid_addr(void *addr) {
+static inline int is_valid_addr(void *addr) {
     if (base_addr == NULL || addr == NULL) return 0;
     unsigned long offset = (unsigned long)addr - (unsigned long)base_addr;
     return (offset < total_pages * PAGE_SIZE) && (offset % PAGE_SIZE == 0);
 }
 
 // Helper function to get page index from address
-static int addr_to_page_idx(void *addr) {
+static inline int addr_to_page_idx(void *addr) {
     return ((unsigned long)addr - (unsigned long)base_addr) / PAGE_SIZE;
 }
 
 // Helper function to get buddy address
-static void *get_buddy(void *addr, int rank) {
+static inline void *get_buddy(void *addr, int rank) {
     unsigned long offset = (unsigned long)addr - (unsigned long)base_addr;
     unsigned long block_size = PAGE_SIZE << (rank - 1);
     unsigned long buddy_offset = offset ^ block_size;
@@ -42,7 +42,7 @@ static void *get_buddy(void *addr, int rank) {
 }
 
 // Helper function to check if a block is in free list
-static int is_in_free_list(void *addr, int rank) {
+static inline int is_in_free_list(void *addr, int rank) {
     free_block_t *block = free_list[rank];
     while (block) {
         if ((void *)block == addr) return 1;
@@ -52,7 +52,7 @@ static int is_in_free_list(void *addr, int rank) {
 }
 
 // Helper function to remove from free list
-static void remove_from_free_list(void *addr, int rank) {
+static inline void remove_from_free_list(void *addr, int rank) {
     free_block_t **curr = &free_list[rank];
     while (*curr) {
         if ((void *)*curr == addr) {
@@ -64,14 +64,14 @@ static void remove_from_free_list(void *addr, int rank) {
 }
 
 // Helper function to add to free list
-static void add_to_free_list(void *addr, int rank) {
+static inline void add_to_free_list(void *addr, int rank) {
     free_block_t *block = (free_block_t *)addr;
     block->next = free_list[rank];
     free_list[rank] = block;
 }
 
 // Helper function to mark block as allocated
-static void mark_allocated(void *addr, int rank) {
+static inline void mark_allocated(void *addr, int rank) {
     int page_idx = addr_to_page_idx(addr);
     int num_pages = 1 << (rank - 1);
     for (int i = 0; i < num_pages; i++) {
@@ -81,7 +81,7 @@ static void mark_allocated(void *addr, int rank) {
 }
 
 // Helper function to mark block as free
-static void mark_free(void *addr, int rank) {
+static inline void mark_free(void *addr, int rank) {
     int page_idx = addr_to_page_idx(addr);
     int num_pages = 1 << (rank - 1);
     for (int i = 0; i < num_pages; i++) {
@@ -91,7 +91,7 @@ static void mark_free(void *addr, int rank) {
 }
 
 // Helper function to check if block is allocated
-static int is_allocated(void *addr) {
+static inline int is_allocated(void *addr) {
     int page_idx = addr_to_page_idx(addr);
     return alloc_map[page_idx];
 }
