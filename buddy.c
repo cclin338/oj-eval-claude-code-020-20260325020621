@@ -1,33 +1,36 @@
 #include "buddy.h"
 #include <stdlib.h>
+#include <string.h>
 #define NULL ((void *)0)
 
 #define MAX_RANK 16
 #define PAGE_SIZE 4096  // 4KB
+#define MAX_PAGES (128 * 1024 / 4)  // Maximum pages in test
 
 // Free list structure
 typedef struct free_block {
     struct free_block *next;
 } free_block_t;
 
-// Allocated block structure
-typedef struct alloc_block {
-    struct alloc_block *next;
-    void *addr;
-    int rank;
-} alloc_block_t;
-
 // Global state
 static void *base_addr = NULL;
 static int total_pages = 0;
 static free_block_t *free_list[MAX_RANK + 1];  // Index 1-16
-static alloc_block_t *alloc_list = NULL;
+
+// Track allocated blocks using a simple array for O(1) lookup
+static char *alloc_map = NULL;  // 1 if allocated, 0 if free
+static int *alloc_rank = NULL;  // Rank of allocated block
 
 // Helper function to check if address is valid
 static int is_valid_addr(void *addr) {
     if (base_addr == NULL || addr == NULL) return 0;
     unsigned long offset = (unsigned long)addr - (unsigned long)base_addr;
     return (offset < total_pages * PAGE_SIZE) && (offset % PAGE_SIZE == 0);
+}
+
+// Helper function to get page index from address
+static int addr_to_page_idx(void *addr) {
+    return ((unsigned long)addr - (unsigned long)base_addr) / PAGE_SIZE;
 }
 
 // Helper function to get buddy address
@@ -67,37 +70,30 @@ static void add_to_free_list(void *addr, int rank) {
     free_list[rank] = block;
 }
 
-// Helper function to add to alloc list
-static void add_to_alloc_list(void *addr, int rank) {
-    alloc_block_t *block = (alloc_block_t *)malloc(sizeof(alloc_block_t));
-    block->addr = addr;
-    block->rank = rank;
-    block->next = alloc_list;
-    alloc_list = block;
-}
-
-// Helper function to remove from alloc list
-static void remove_from_alloc_list(void *addr) {
-    alloc_block_t **curr = &alloc_list;
-    while (*curr) {
-        if ((*curr)->addr == addr) {
-            alloc_block_t *to_remove = *curr;
-            *curr = (*curr)->next;
-            free(to_remove);
-            return;
-        }
-        curr = &(*curr)->next;
+// Helper function to mark block as allocated
+static void mark_allocated(void *addr, int rank) {
+    int page_idx = addr_to_page_idx(addr);
+    int num_pages = 1 << (rank - 1);
+    for (int i = 0; i < num_pages; i++) {
+        alloc_map[page_idx + i] = 1;
+        alloc_rank[page_idx + i] = rank;
     }
 }
 
-// Helper function to find alloc block
-static alloc_block_t *find_alloc_block(void *addr) {
-    alloc_block_t *curr = alloc_list;
-    while (curr) {
-        if (curr->addr == addr) return curr;
-        curr = curr->next;
+// Helper function to mark block as free
+static void mark_free(void *addr, int rank) {
+    int page_idx = addr_to_page_idx(addr);
+    int num_pages = 1 << (rank - 1);
+    for (int i = 0; i < num_pages; i++) {
+        alloc_map[page_idx + i] = 0;
+        alloc_rank[page_idx + i] = 0;
     }
-    return NULL;
+}
+
+// Helper function to check if block is allocated
+static int is_allocated(void *addr) {
+    int page_idx = addr_to_page_idx(addr);
+    return alloc_map[page_idx];
 }
 
 // Helper function to get max rank for unallocated address
@@ -133,8 +129,9 @@ int init_page(void *p, int pgcount) {
         free_list[i] = NULL;
     }
 
-    // Initialize alloc list
-    alloc_list = NULL;
+    // Initialize allocation tracking arrays
+    alloc_map = (char *)calloc(pgcount, sizeof(char));
+    alloc_rank = (int *)calloc(pgcount, sizeof(int));
 
     // Add all memory to the largest possible rank
     int max_rank = 0;
@@ -162,7 +159,7 @@ void *alloc_pages(int rank) {
     if (free_list[rank] != NULL) {
         void *addr = (void *)free_list[rank];
         remove_from_free_list(addr, rank);
-        add_to_alloc_list(addr, rank);
+        mark_allocated(addr, rank);
         return addr;
     }
 
@@ -178,7 +175,7 @@ void *alloc_pages(int rank) {
                 add_to_free_list(buddy, split_rank);
             }
 
-            add_to_alloc_list(block, rank);
+            mark_allocated(block, rank);
             return block;
         }
     }
@@ -189,12 +186,13 @@ void *alloc_pages(int rank) {
 int return_pages(void *p) {
     if (!is_valid_addr(p)) return -EINVAL;
 
-    // Find the allocated block
-    alloc_block_t *alloc_block = find_alloc_block(p);
-    if (!alloc_block) return -EINVAL;
+    // Check if block is allocated
+    if (!is_allocated(p)) return -EINVAL;
 
-    int rank = alloc_block->rank;
-    remove_from_alloc_list(p);
+    int page_idx = addr_to_page_idx(p);
+    int rank = alloc_rank[page_idx];
+
+    mark_free(p, rank);
 
     // Try to merge with buddy
     void *curr_block = p;
@@ -226,9 +224,9 @@ int query_ranks(void *p) {
     if (!is_valid_addr(p)) return -EINVAL;
 
     // Check if this is an allocated block
-    alloc_block_t *alloc_block = find_alloc_block(p);
-    if (alloc_block) {
-        return alloc_block->rank;
+    if (is_allocated(p)) {
+        int page_idx = addr_to_page_idx(p);
+        return alloc_rank[page_idx];
     }
 
     // For unallocated blocks, return the maximum rank
